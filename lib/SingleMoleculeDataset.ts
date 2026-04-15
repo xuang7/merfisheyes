@@ -1070,11 +1070,102 @@ export class SingleMoleculeDataset {
 
     await onProgress?.(10, "Fetching manifest from custom S3...");
 
-    // Construct manifest URL
-    const manifestUrl = `${customS3BaseUrl}/manifest.json.gz`;
+    const base = customS3BaseUrl.replace(/\/+$/, "");
+
+    const getAccessToken = (): string => {
+      try {
+        return typeof localStorage !== "undefined"
+          ? localStorage.getItem("access_token") || ""
+          : "";
+      } catch {
+        return "";
+      }
+    };
+
+    const isDirectCustomBase = (): boolean => {
+      return (
+        base.startsWith("http://") ||
+        base.startsWith("https://") ||
+        base.startsWith("/merfisheyes-s3/") ||
+        base.startsWith("/assets/") ||
+        base.startsWith("assets/")
+      );
+    };
+
+    const normalizePathRoot = (): string => {
+      const rooted = base.startsWith("/") ? base : "/" + base;
+
+      return rooted || "/";
+    };
+
+    const fetchCustomFile = async (fileKey: string): Promise<Response> => {
+      if (!base) {
+        throw new Error("Missing custom source base URL");
+      }
+
+      if (isDirectCustomBase()) {
+        const url = `${base}/${fileKey}`;
+        const response = await fetch(url);
+
+        if (!response.ok) {
+          throw new Error(
+            `Failed to download ${fileKey} from custom source: ${response.status} ${response.statusText}`,
+          );
+        }
+
+        return response;
+      }
+
+      // ADMAP dataset root mode: /owner/dataset/version[/datasetRoot]
+      const filePath = (normalizePathRoot() + "/" + fileKey).replace(
+        /\/+/g,
+        "/",
+      );
+
+      const token = getAccessToken();
+      const headers: HeadersInit = token
+        ? { Authorization: "Bearer " + token }
+        : {};
+
+      let presignResponse = await fetch(
+        "/api/dataset/presign-download?filePath=" +
+          encodeURIComponent(filePath),
+        { headers },
+      );
+
+      if (!presignResponse.ok) {
+        presignResponse = await fetch(
+          "/api/dataset/public-presign-download?filePath=" +
+            encodeURIComponent(filePath),
+        );
+      }
+
+      if (!presignResponse.ok) {
+        throw new Error(
+          `Failed to get presigned URL for ${filePath}: ${presignResponse.status} ${presignResponse.statusText}`,
+        );
+      }
+
+      const payload = await presignResponse.json();
+      const presignedUrl = payload?.presignedUrl;
+
+      if (!presignedUrl) {
+        throw new Error(`No presignedUrl in response for ${filePath}`);
+      }
+
+      const fileResponse = await fetch(presignedUrl);
+
+      if (!fileResponse.ok) {
+        throw new Error(
+          `Failed to download ${fileKey} via presigned URL: ${fileResponse.status} ${fileResponse.statusText}`,
+        );
+      }
+
+      return fileResponse;
+    };
 
     // Download and decompress manifest
-    const manifestResponse = await fetch(manifestUrl);
+    const manifestResponse = await fetchCustomFile("manifest.json.gz");
 
     if (!manifestResponse.ok) {
       throw new Error(
@@ -1176,11 +1267,8 @@ export class SingleMoleculeDataset {
         .replace(/_+/g, "_")
         .replace(/^_|_$/g, "");
 
-      // Construct gene file URL
-      const geneFileUrl = `${customS3BaseUrl}/genes/${sanitizedName}.bin.gz`;
-
       // Download and decompress gene file
-      const geneResponse = await fetch(geneFileUrl);
+      const geneResponse = await fetchCustomFile(`genes/${sanitizedName}.bin.gz`);
 
       if (!geneResponse.ok) {
         throw new Error(
@@ -1234,14 +1322,14 @@ export class SingleMoleculeDataset {
           .replace(/_+/g, "_")
           .replace(/^_|_$/g, "");
 
-        const geneFileUrl = `${customS3BaseUrl}/genes/${sanitizedName}_uuuuuuuuuu.bin.gz`;
+        const geneFileKey = `genes/${sanitizedName}_uuuuuuuuuu.bin.gz`;
 
         console.log(
-          `[SingleMoleculeDataset] Lazy-loading unassigned '${geneName}' from custom S3: ${geneFileUrl}`,
+          `[SingleMoleculeDataset] Lazy-loading unassigned '${geneName}' from custom S3: ${geneFileKey}`,
         );
 
         try {
-          const geneResponse = await fetch(geneFileUrl);
+          const geneResponse = await fetchCustomFile(geneFileKey);
 
           if (!geneResponse.ok) {
             console.warn(

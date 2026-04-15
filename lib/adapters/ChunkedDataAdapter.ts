@@ -136,6 +136,107 @@ export class ChunkedDataAdapter {
     }
   }
 
+  private getAccessToken(): string {
+    try {
+      return typeof localStorage !== "undefined"
+        ? localStorage.getItem("access_token") || ""
+        : "";
+    } catch {
+      return "";
+    }
+  }
+
+  private isDirectCustomBase(): boolean {
+    if (!this.customS3BaseUrl) {
+      return false;
+    }
+
+    const base = this.customS3BaseUrl;
+
+    return (
+      base.startsWith("http://") ||
+      base.startsWith("https://") ||
+      base.startsWith("/merfisheyes-s3/") ||
+      base.startsWith("/assets/") ||
+      base.startsWith("assets/")
+    );
+  }
+
+  private normalizePathRoot(): string {
+    const trimmed = (this.customS3BaseUrl || "").replace(/\/+$/, "");
+    const rooted = trimmed.startsWith("/") ? trimmed : "/" + trimmed;
+
+    return rooted || "/";
+  }
+
+  private async fetchCustomFile(fileKey: string): Promise<Response> {
+    const base = (this.customS3BaseUrl || "").replace(/\/+$/, "");
+
+    if (!base) {
+      throw new Error("Missing custom S3 base URL");
+    }
+
+    // Direct custom sources: public proxy path or full URL
+    if (this.isDirectCustomBase()) {
+      const url = base + "/" + fileKey;
+      const response = await fetch(url);
+
+      if (!response.ok) {
+        throw new Error(
+          `Failed to fetch ${fileKey} from custom source: ${response.status} ${response.statusText}`,
+        );
+      }
+
+      return response;
+    }
+
+    // ADMAP dataset root mode: /owner/dataset/version[/datasetRoot]
+    // Resolve each file via presigned URL APIs.
+    const filePath = (this.normalizePathRoot() + "/" + fileKey).replace(
+      /\/+/g,
+      "/",
+    );
+    const token = this.getAccessToken();
+    const headers: HeadersInit = token
+      ? { Authorization: "Bearer " + token }
+      : {};
+
+    let presignResponse = await fetch(
+      "/api/dataset/presign-download?filePath=" + encodeURIComponent(filePath),
+      { headers },
+    );
+
+    if (!presignResponse.ok) {
+      presignResponse = await fetch(
+        "/api/dataset/public-presign-download?filePath=" +
+          encodeURIComponent(filePath),
+      );
+    }
+
+    if (!presignResponse.ok) {
+      throw new Error(
+        `Failed to get presigned URL for ${filePath}: ${presignResponse.status} ${presignResponse.statusText}`,
+      );
+    }
+
+    const payload = await presignResponse.json();
+    const presignedUrl = payload?.presignedUrl;
+
+    if (!presignedUrl) {
+      throw new Error(`No presignedUrl in response for ${filePath}`);
+    }
+
+    const fileResponse = await fetch(presignedUrl);
+
+    if (!fileResponse.ok) {
+      throw new Error(
+        `Failed to fetch ${fileKey} via presigned URL: ${fileResponse.status} ${fileResponse.statusText}`,
+      );
+    }
+
+    return fileResponse;
+  }
+
   /**
    * Fetch and parse JSON file (from S3 URL or local File)
    */
@@ -153,20 +254,14 @@ export class ChunkedDataAdapter {
 
       return JSON.parse(text);
     } else if (this.mode === "custom") {
-      // Custom S3 mode - construct URL directly
-      const url = `${this.customS3BaseUrl}/${fileKey}`;
+      const response = await this.fetchCustomFile(fileKey);
+      const text = await response.text();
 
-      console.log(`Fetching JSON from custom S3: ${url}`);
-
-      const response = await fetch(url);
-
-      if (!response.ok) {
-        throw new Error(
-          `Failed to fetch ${fileKey} from custom S3: ${response.status} ${response.statusText}`,
-        );
+      try {
+        return JSON.parse(text);
+      } catch (error) {
+        throw new Error(`Failed to parse JSON ${fileKey}: ${error}`);
       }
-
-      return await response.json();
     } else {
       // Remote mode - use presigned URLs from API
       const url = this.downloadUrls[fileKey];
@@ -203,19 +298,7 @@ export class ChunkedDataAdapter {
       // File is already gzipped, decompress it
       return await this.decompress(file);
     } else if (this.mode === "custom") {
-      // Custom S3 mode - construct URL directly
-      const url = `${this.customS3BaseUrl}/${fileKey}`;
-
-      console.log(`Fetching from custom S3: ${url}`);
-
-      const response = await fetch(url);
-
-      if (!response.ok) {
-        throw new Error(
-          `Failed to fetch ${fileKey} from custom S3: ${response.status} ${response.statusText}`,
-        );
-      }
-
+      const response = await this.fetchCustomFile(fileKey);
       const compressedBlob = await response.blob();
 
       return await this.decompress(compressedBlob);

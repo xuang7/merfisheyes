@@ -1,281 +1,27 @@
 "use client";
 
-import type { SingleMoleculeDataset } from "@/lib/SingleMoleculeDataset";
-import type { PanelType } from "@/lib/stores/splitScreenStore";
-
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Button, Spinner } from "@heroui/react";
+import { Spinner } from "@heroui/react";
 
-import { SingleMoleculeThreeScene } from "@/components/single-molecule-three-scene";
-import { SingleMoleculeControls } from "@/components/single-molecule-controls";
-import { SingleMoleculeLegends } from "@/components/single-molecule-legends";
-import { SplitScreenContainer } from "@/components/split-screen-container";
-import { useSingleMoleculeStore } from "@/lib/stores/singleMoleculeStore";
-import { pickDefaultGenes } from "@/lib/utils/auto-select-genes";
-import { useSingleMoleculeVisualizationStore } from "@/lib/stores/singleMoleculeVisualizationStore";
-import { useSplitScreenStore } from "@/lib/stores/splitScreenStore";
-import {
-  useSMVizUrlSync,
-  tryReadSMVizFromUrl,
-  applySMVizState,
-} from "@/lib/hooks/useUrlVizSync";
-import LightRays from "@/components/react-bits/LightRays";
-import { subtitle, title } from "@/components/primitives";
-
-function SingleMoleculeViewerFromS3Content() {
-  const searchParams = useSearchParams();
+function FromS3Redirect() {
   const router = useRouter();
-  const { addDataset } = useSingleMoleculeStore();
-  const smVizStore = useSingleMoleculeVisualizationStore();
-  const { addGene } = smVizStore;
-  const {
-    isSplitMode,
-    rightPanelDatasetId,
-    rightPanelS3Url,
-    rightPanelType,
-    syncEnabled,
-    enableSplit,
-    setRightPanel,
-    setRightPanelS3,
-    setSyncEnabled,
-    setSyncFromUrl,
-  } = useSplitScreenStore();
-  const [dataset, setDataset] = useState<SingleMoleculeDataset | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const s3Url = searchParams.get("url");
-
-  // URL visualization state sync
-  useSMVizUrlSync(!!dataset, dataset, smVizStore);
-
-  // Read split params from URL on mount
-  useEffect(() => {
-    const splitId = searchParams.get("split");
-    const splitS3Url = searchParams.get("splitS3Url");
-    const splitType = searchParams.get("splitType") as PanelType | null;
-
-    if (splitS3Url && splitType) {
-      enableSplit();
-      setRightPanelS3(decodeURIComponent(splitS3Url), splitType);
-    } else if (splitId && splitType) {
-      enableSplit();
-      setRightPanel(splitId, splitType);
-    }
-
-    if (searchParams.get("sync") === "1") {
-      setSyncEnabled(true);
-      setSyncFromUrl(true);
-    }
-  }, []);
-
-  // Write split params to URL when split state changes
-  useEffect(() => {
-    // Use window.location.search as base to avoid stale Next.js searchParams
-    const newParams = new URLSearchParams(window.location.search);
-
-    if (isSplitMode && rightPanelType) {
-      if (rightPanelS3Url) {
-        newParams.set("splitS3Url", encodeURIComponent(rightPanelS3Url));
-        newParams.delete("split");
-      } else if (rightPanelDatasetId) {
-        newParams.set("split", rightPanelDatasetId);
-        newParams.delete("splitS3Url");
-      }
-      newParams.set("splitType", rightPanelType);
-      if (syncEnabled) {
-        newParams.set("sync", "1");
-      } else {
-        newParams.delete("sync");
-      }
-      router.replace(`?${newParams.toString()}`, { scroll: false });
-    } else if (!isSplitMode) {
-      newParams.delete("split");
-      newParams.delete("splitS3Url");
-      newParams.delete("splitType");
-      newParams.delete("sync");
-      const paramStr = newParams.toString();
-
-      router.replace(paramStr ? `?${paramStr}` : window.location.pathname, {
-        scroll: false,
-      });
-    }
-  }, [
-    isSplitMode,
-    rightPanelDatasetId,
-    rightPanelS3Url,
-    rightPanelType,
-    syncEnabled,
-  ]);
+  const searchParams = useSearchParams();
 
   useEffect(() => {
-    if (!s3Url) {
-      setError("No S3 URL provided");
-      setIsLoading(false);
+    const qs = searchParams.toString();
 
-      return;
-    }
-
-    loadDatasetFromCustomS3(decodeURIComponent(s3Url));
-  }, [s3Url]);
-
-  const loadDatasetFromCustomS3 = async (baseUrl: string) => {
-    try {
-      setIsLoading(true);
-      setError(null);
-
-      console.log("Loading single molecule dataset from custom S3:", baseUrl);
-
-      // Import SingleMoleculeDataset
-      const { SingleMoleculeDataset } = await import(
-        "@/lib/SingleMoleculeDataset"
-      );
-
-      // Load dataset using fromCustomS3 method with lazy loading
-      const smDataset = await SingleMoleculeDataset.fromCustomS3(
-        baseUrl,
-        (progress, message) => {
-          console.log(`${progress}%: ${message}`);
-        },
-      );
-
-      console.log(
-        "SingleMoleculeDataset loaded from custom S3:",
-        smDataset.getSummary(),
-      );
-
-      // Store dataset in both local state and global store
-      setDataset(smDataset);
-      addDataset(smDataset);
-      console.log("Dataset added to singleMoleculeStore");
-
-      // Check if URL has viz state
-      const urlVizState = tryReadSMVizFromUrl("left");
-
-      if (urlVizState) {
-        console.log("Applying visualization state from URL");
-        applySMVizState(urlVizState, smVizStore, smDataset);
-      } else {
-        const genesToSelect = pickDefaultGenes(smDataset.uniqueGenes);
-
-        genesToSelect.forEach((gene) => {
-          addGene(gene);
-        });
-      }
-
-      setIsLoading(false);
-    } catch (err) {
-      console.error(
-        "Error loading single molecule dataset from custom S3:",
-        err,
-      );
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Failed to load dataset from custom S3",
-      );
-      setIsLoading(false);
-    }
-  };
-
-  // Loading state
-  if (isLoading) {
-    return (
-      <>
-        <div className="fixed inset-0 w-full h-full z-0">
-          <LightRays
-            lightSpread={1.0}
-            mouseInfluence={0.1}
-            pulsating={false}
-            rayLength={10}
-            raysColor="#667eea"
-            raysOrigin="top-left"
-            raysSpeed={0.8}
-          />
-        </div>
-        <div className="fixed inset-0 w-full h-full z-0">
-          <LightRays
-            lightSpread={1.0}
-            mouseInfluence={0.1}
-            pulsating={false}
-            rayLength={10}
-            raysColor="#764ba2"
-            raysOrigin="top-right"
-            raysSpeed={0.8}
-          />
-        </div>
-        <div className="relative z-10 flex items-center justify-center h-full">
-          <div className="flex flex-col items-center gap-4">
-            <Spinner color="secondary" size="lg" />
-            <p className={subtitle()}>Loading dataset from S3...</p>
-          </div>
-        </div>
-      </>
-    );
-  }
-
-  // Error state
-  if (error) {
-    return (
-      <>
-        <div className="fixed inset-0 w-full h-full z-0">
-          <LightRays
-            lightSpread={1.0}
-            mouseInfluence={0.1}
-            pulsating={false}
-            rayLength={10}
-            raysColor="#FF72E1"
-            raysOrigin="top-center"
-            raysSpeed={0.8}
-          />
-        </div>
-        <div className="relative z-10 flex items-center justify-center h-full p-8">
-          <div className="flex flex-col items-center gap-6 max-w-2xl w-full">
-            <div className="text-center">
-              <h2 className={title({ size: "md", color: "pink" })}>
-                Failed to load dataset from S3
-              </h2>
-              <p className={subtitle({ class: "mt-4" })}>{error}</p>
-            </div>
-            <div className="flex gap-4">
-              <Button
-                color="secondary"
-                onPress={() => router.push("/sm-viewer")}
-              >
-                Go to Home
-              </Button>
-              <Button
-                color="default"
-                variant="bordered"
-                onPress={() =>
-                  s3Url && loadDatasetFromCustomS3(decodeURIComponent(s3Url))
-                }
-              >
-                Retry
-              </Button>
-            </div>
-          </div>
-        </div>
-      </>
-    );
-  }
-
-  // Dataset loaded
-  if (!dataset) {
-    return null;
-  }
+    router.replace(qs ? `/sm-viewer?${qs}` : "/sm-viewer");
+  }, [router, searchParams]);
 
   return (
-    <SplitScreenContainer>
-      <SingleMoleculeControls />
-      <SingleMoleculeLegends />
-      <SingleMoleculeThreeScene />
-    </SplitScreenContainer>
+    <div className="flex items-center justify-center h-full">
+      <Spinner size="lg" />
+    </div>
   );
 }
 
-export default function SingleMoleculeViewerFromS3Page() {
+export default function SmViewerFromS3Page() {
   return (
     <Suspense
       fallback={
@@ -284,7 +30,7 @@ export default function SingleMoleculeViewerFromS3Page() {
         </div>
       }
     >
-      <SingleMoleculeViewerFromS3Content />
+      <FromS3Redirect />
     </Suspense>
   );
 }
