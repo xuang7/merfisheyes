@@ -1,0 +1,13 @@
+node_modules
+.next
+.git
+.env*
+npm-debug.log*
+.DS_Store
+.vscode
+.idea
+docs
+k8s
+tests
+scripts
+*.md
