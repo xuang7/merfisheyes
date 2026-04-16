@@ -106,7 +106,7 @@ function ViewerContent() {
       newParams.delete("sync");
       const paramStr = newParams.toString();
 
-      router.replace(paramStr ? `?${paramStr}` : window.location.pathname, {
+      router.replace(paramStr ? `?${paramStr}` : ".", {
         scroll: false,
       });
     }
@@ -185,7 +185,7 @@ function ViewerContent() {
     if (window.history.length > 1) {
       router.back();
     } else {
-      window.location.href = "/";
+      router.push("/");
     }
   };
 
